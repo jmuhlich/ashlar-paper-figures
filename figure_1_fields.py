@@ -1,17 +1,12 @@
-import warnings
 import sys
 import pathlib
 import numpy as np
-import skimage.color, skimage.filters, skimage.exposure
+import networkx as nx
+import skimage.util, skimage.color, skimage.exposure
 import attr
 import ashlar, ashlar.reg
 from ashlar.bioformats import BioformatsReader
 
-
-def extent(plane):
-    v1 = plane.bounds.vector1
-    v2 = plane.bounds.vector2
-    return (v1.x, v2.x, v2.y, v1.y)
 
 def colorize(img, hue):
     if not np.issubdtype(img.dtype, np.floating) or img.ndim != 2:
@@ -27,113 +22,96 @@ def idx2hue(i, n):
     return i / n * (2 * np.pi) * 0.8 + 1.8
 
 
-warnings.filterwarnings(
-    'ignore', 'Possible precision loss', UserWarning, '^skimage\.util\.dtype'
-)
+# Curated tile lists that produce a good figure.
+known_datasets = {
+    'COLNOR69MW2@20191106_172134_384761.rcpnl': [
+        'TNP_PILOT2', [386, 387, 357, 358]
+    ],
+    'Scan_20170408_105927_01x4x00024.rcpnl': [
+        'ZM_CYCIF1_059_ITOX ... BP40', [13, 14, 19, 20]
+    ],
+}
 
-input_dir = pathlib.Path(sys.argv[1])
-file_path = input_dir / 'Scan_20190510_220028_01x4x00696.rcpnl'
-if not file_path.exists():
-    print(f"Could not find {file_path.name} in {input_dir} (expected Z122_PickSeq_2 dir)")
+if len(sys.argv) == 1:
+    print(f"Usage: {sys.argv[0]} in_path [tile1 tile2 tile3 tile4]")
     sys.exit()
 
-tiles = [506, 507, 477, 478]
+file_path = pathlib.Path(sys.argv[1])
+if len(sys.argv) == 2 and file_path.name in known_datasets:
+    tile_numbers = known_datasets[file_path.name][1]
+else:
+    tile_numbers = list(map(int, sys.argv[2:]))
+    if len(tile_numbers) != 4:
+        print("Please provide the numbers of 4 mutually overlapping tiles,")
+        print("or specify one of the following datasets:")
+        for name, (loc, _) in known_datasets.items():
+            print(f"  {loc} ... {name}")
+        sys.exit(1)
 
-r1 = BioformatsReader.from_path(file_path)
-ts1 = r1.tileset
-rp1 = ashlar.RegistrationProcess(
-    tileset=ts1, channel_number=0, overlap_minimum_size=40
+reader = BioformatsReader.from_path(file_path)
+tileset = reader.tileset.subset(tile_numbers)
+rp = ashlar.RegistrationProcess(
+    tileset=tileset, channel_number=0, num_permutations=20
 )
+tiles = [rp.get_tile(t) for t in range(len(tileset))]
 
-tcs = [rp1.get_tile(t) for t in tiles]
-
-origin = np.min(ts1.positions[tiles], axis=0)
-scale = tcs[0].plane.pixel_size
-mshape = tuple(np.array(tcs[0].plane.image.shape) * 2) + (3,)
-ccenter = tcs[0].plane.intersection(tcs[3].plane).bounds.center - origin
-cshape = ashlar.Vector(200, 250)
+origin = np.min(tileset.positions, axis=0)
+scale = tiles[0].plane.pixel_size
+mshape = tuple(np.array(tiles[0].plane.image.shape) * 2) + (3,)
+tile_intersection = tiles[0].plane.bounds
+for tile in tiles[1:]:
+    tile_intersection = tile_intersection.intersection(tile.plane.bounds)
+if tile_intersection.area == 0:
+    print(f"Tiles {tile_numbers} are not mutually overlapping")
+    sys.exit()
+ccenter = tile_intersection.center - origin
+cshape = ashlar.Vector(100, 100)
 cmin = ((ccenter - cshape) / scale).astype(int)
 cmax = ((ccenter + cshape) / scale).astype(int)
 
 alignments = [
-    rp1.compute_neighbor_intersection(tiles[a], tiles[b])
-    for a, b in [[0, 1], [0, 2], [2, 3]]
+    rp.compute_neighbor_intersection(*args)
+    for args in rp.neighbor_intersection_tasks()
 ]
-ashift_1 = alignments[0].get_shift(tiles[1])
-ashift_2 = alignments[1].get_shift(tiles[2])
-ashift_3 = alignments[2].get_shift(tiles[3])
-shifts = [ashlar.Vector(0, 0), ashift_1, ashift_2, ashift_2 + ashift_3]
+alignments = sorted(alignments, key=lambda x: x.alignment.error)[:3]
+edge_shifts = {a.tile_indexes: a.get_shift(a.tile_index_2) for a in alignments}
+positions = tileset.positions - origin
+new_positions = positions.copy()
+g = nx.DiGraph(list(edge_shifts))
+for target, path in nx.algorithms.single_source_shortest_path(g, 0).items():
+    for u, v in zip(path[:-1], path[1:]):
+        new_positions[target] += edge_shifts[u, v]
 
 rmax = np.percentile(
-    np.dstack([skimage.img_as_float32(t.plane.image) for t in tcs]),
+    np.dstack([
+        skimage.util.img_as_float32(rp.get_tile(t).plane.image)
+        for t in range(len(tileset))
+    ]),
     99.99
 )
 
 mosaic1 = np.zeros(mshape, np.float32)
 mosaic2 = np.zeros_like(mosaic1)
-mosaic2_gray = np.zeros(mshape[:2], np.float32)
+#mosaic2_gray = np.zeros(mshape[:2], np.float32)
 
-for i, (tile, shift) in enumerate(zip(tcs, shifts)):
+data = zip(tiles, positions, new_positions)
+for i, (tile, pos_nominal, pos_corrected) in enumerate(data):
     hue = idx2hue(i, len(tiles))
     img = skimage.exposure.rescale_intensity(
-        skimage.img_as_float32(tile.plane.image), in_range=(0, rmax)
+        skimage.util.img_as_float32(tile.plane.image), in_range=(0, rmax)
     )
     img_c = colorize(img, hue)
-    pos_nominal = tile.plane.bounds.vector1 - origin
-    pos_corrected = pos_nominal + shift
-    #if i == 2:
-    #    import pdb; pdb.set_trace()
     ashlar.reg.paste(mosaic1, img_c, pos_nominal / scale, np.add)
     ashlar.reg.paste(mosaic2, img_c, pos_corrected / scale, np.add)
-    ashlar.reg.paste(
-        mosaic2_gray, img, pos_corrected / scale, ashlar.reg.pastefunc_blend
-    )
+    # ashlar.reg.paste(
+    #     mosaic2_gray, img, pos_corrected / scale, ashlar.reg.pastefunc_blend
+    # )
 
 crops = {}
 for img, name in ((mosaic1, 'B'), (mosaic2, 'C')):
     crop = img[cmin[0]:cmax[0],cmin[1]:cmax[1]]
     crop = skimage.exposure.rescale_intensity(crop, in_range=(0.05, 0.9))
     crop = skimage.exposure.adjust_gamma(crop, 1/2.2)
+    crop = skimage.util.img_as_ubyte(crop)
     crops[name] = crop
     skimage.io.imsave(f'Figure_1{name}.png', crop, check_contrast=False)
-
-
-# shifts_other = []
-# rmax_other = []
-# mosaic_gray_other = []
-# for rp in (rp2, rp3):
-#     alignments = [
-#         rp.compute_neighbor_intersection(tiles[a], tiles[b])
-#         for a, b in [[0, 1], [0, 2], [2, 3]]
-#     ]
-#     cycle_shifts = [
-#         ashlar.Vector(0, 0),
-#         alignments[0].alignment.shift,
-#         alignments[1].alignment.shift,
-#         alignments[1].alignment.shift + alignments[2].alignment.shift
-#     ]
-#     cycle_tcs = [rp.get_tile(t) for t in tiles]
-#     layer_alignment = ashlar.align.register_planes(
-#         tcs[0].plane, cycle_tcs[0].plane
-#     )
-#     layer_shift = layer_alignment.shift
-#     cycle_rmax = np.percentile(
-#         np.dstack([skimage.img_as_float32(t.plane.image) for t in cycle_tcs]),
-#         99.99
-#     )
-#     mg = np.zeros_like(mosaic2_gray)
-#     for i, (tile, shift) in enumerate(zip(cycle_tcs, cycle_shifts)):
-#         hue = idx2hue(i, len(tiles))
-#         img = skimage.exposure.rescale_intensity(
-#             skimage.img_as_float32(tile.plane.image), in_range=(0, cycle_rmax)
-#         )
-#         pos_nominal = tile.plane.bounds.vector1 - origin
-#         pos_corrected = pos_nominal + shift + layer_shift
-#         if i != 0:
-#             pos_corrected += (np.random.rand(2) - 0.5) * 3
-#         ashlar.reg.paste(
-#             mg, img, pos_corrected / scale, np.maximum
-#         )
-#     shifts_other.append(cycle_shifts)
-#     rmax_other.append(cycle_rmax)
-#     mosaic_gray_other.append(mg)
