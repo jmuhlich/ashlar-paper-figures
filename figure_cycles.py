@@ -1,9 +1,9 @@
-import warnings
 import sys
 import os
 import itertools
 import pathlib
 import concurrent.futures
+import tqdm
 import gc
 import numpy as np
 import skimage.color
@@ -31,14 +31,9 @@ def pool_apply_blocked(pool, w, func, img1, img2, *args):
 
 def show_progress(futures):
     n = len(futures)
-    while True:
-        done, not_done = concurrent.futures.wait(futures, timeout=1)
-        c = len(done)
-        percent = int(np.round(c / n * 100))
-        print(f"\r        {percent}% completed ({c}/{n})", end="")
-        if c == n:
-            print()
-            break
+    progress = tqdm.tqdm(concurrent.futures.as_completed(futures), total=n)
+    for _ in progress:
+        pass
 
 
 def optical_flow(img1, img2, w, pool):
@@ -96,9 +91,16 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     return panel
 
 
-warnings.filterwarnings(
-    'ignore', 'Possible precision loss', UserWarning, '^skimage\.util\.dtype'
-)
+def crop_to(img, shape, offset=None):
+    begin = np.array(offset if offset is not None else [0, 0])
+    end = begin + shape
+    if any(end > img.shape):
+        raise ValueError("offset+shape is larger than image size")
+    out = img[begin[0]:end[0], begin[1]:end[1]]
+    # Above check should have handled this, but let's be sure.
+    assert out.shape == tuple(shape)
+    return out
+
 
 # First cycle Ashlar image.
 path1 = pathlib.Path(sys.argv[1])
@@ -107,41 +109,33 @@ path2a = pathlib.Path(sys.argv[2])
 # Later cycle Ashlar image, simultaneously stitched with first cycle.
 path2b = pathlib.Path(sys.argv[3])
 
-# Small crop
-# x1, x2 = 100, 10100
-# y1, y2 = 8000, 16000
-# ax1, ax2 = 3000, 4000
-# ay1, ay2 = 3000, 4000
-
-# Medium crop
-# x1, x2 = 100, 20100
-# y1, y2 = 8000, 24000
-# ax1, ax2 = 11000, 12000
-# ay1, ay2 = 4000, 5000
-
-# Full image
-x1, x2 = 100, 35000
-y1, y2 = 100, 24000
-ax1, ax2 = 18000-400, 18000+400
-ay1, ay2 = 7600-400, 7600+100
-
+ga_downscale = 10
 bsize = 200
 out_scale = 20
-#dmax = 25
 dmax = 5
 block_threshold = 8000
 
 assert bsize % out_scale == 0, "bsize must be a multiple of out_scale"
 
 print("Performing global image alignment")
-c1 = skimage.io.imread(str(path1))[y1:y2, x1:x2]
+img1 = skimage.io.imread(str(path1))
 img2a = skimage.io.imread(str(path2a))
-c2a = img2a[y1:y2, x1:x2]
-shift, _, _ = skimage.feature.register_translation(
-    c1[ay1:ay2, ax1:ax2], c2a[ay1:ay2, ax1:ax2]
-)
-shift = np.round(shift).astype(int)
-c2a = img2a[y1-shift[0]:y2-shift[0], x1-shift[1]:x2-shift[1]]
+its = np.minimum(img1.shape, img2a.shape)
+c1 = crop_to(img1, its)
+c2a = crop_to(img2a, its)
+
+r1 = skimage.transform.rescale(c1, 1 / ga_downscale, anti_aliasing=False)
+r2 = skimage.transform.rescale(c2a, 1 / ga_downscale, anti_aliasing=False)
+shift, _, _ = skimage.feature.register_translation(r1, r2, ga_downscale)
+shift = (shift * ga_downscale).astype(int)
+print(f"Global shift for independent stitch is x,y={shift[::-1]}")
+
+border = np.abs(shift)
+offset1 = border
+offset2 = border - shift
+shape = its - border
+c1 = crop_to(img1, shape, offset1)
+c2a = crop_to(img2a, shape, offset2)
 
 bmax = skimage.measure.block_reduce(c1, (bsize, bsize), np.max)
 bmask = bmax > block_threshold
@@ -150,6 +144,7 @@ bmask = skimage.morphology.remove_small_holes(bmask, area_threshold=100)
 
 pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
+print()
 print("Building first panel")
 panel_a = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
 print("    saving")
@@ -158,7 +153,8 @@ del img2a, c2a, panel_a
 gc.collect()
 
 try:
-    c2b = skimage.io.imread(str(path2b))[y1:y2, x1:x2]
+    c2b = crop_to(skimage.io.imread(str(path2b)), shape, offset1)
+    print()
     print("Building second panel")
     panel_b = build_panel(c1, c2b, bmask, bsize, out_scale, dmax, pool)
     print("    saving")
