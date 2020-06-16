@@ -3,7 +3,6 @@ import pathlib
 import numpy as np
 import networkx as nx
 import skimage.util, skimage.color, skimage.exposure
-import attr
 import ashlar, ashlar.reg
 from ashlar.bioformats import BioformatsReader
 
@@ -69,11 +68,10 @@ cshape = ashlar.Vector(100, 100)
 cmin = ((ccenter - cshape) / scale).astype(int)
 cmax = ((ccenter + cshape) / scale).astype(int)
 
-alignments = [
-    rp.compute_neighbor_intersection(*args)
-    for args in rp.neighbor_intersection_tasks()
-]
-alignments = sorted(alignments, key=lambda x: x.alignment.error)[:3]
+executor = ashlar.RegistrationProcessExecutor(process=rp)
+executor.neighbor_alignments()
+alignments = executor.neighbor_alignments_
+alignments = sorted(alignments, key=lambda x: x.plane_alignment.error)[:3]
 edge_shifts = {a.tile_indexes: a.get_shift(a.tile_index_2) for a in alignments}
 positions = tileset.positions - origin
 new_positions = positions.copy()
