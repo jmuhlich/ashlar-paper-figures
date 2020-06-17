@@ -12,6 +12,8 @@ import skimage.io
 import skimage.morphology
 import skimage.measure
 import skimage.util
+import seaborn as sns
+import matplotlib as mpl
 
 
 def pool_apply_blocked(pool, w, func, img1, img2, *args):
@@ -86,7 +88,7 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     panel = heatmap[:img1.shape[0], :img1.shape[1], :]
     compose(panel, img1, pool)
     panel = downscale(panel, out_scale)
-    return panel
+    return panel, distance
 
 
 def crop_to(img, shape, offset=None):
@@ -181,19 +183,49 @@ pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
 print()
 print("Building first panel")
-panel_a = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
+panel_a, dist_a = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
 print("    saving")
-skimage.io.imsave('Figure_1E.tif', panel_a, check_contrast=False)
+skimage.io.imsave('Figure_1E_image.tif', panel_a, check_contrast=False)
 del img2a, c2a, panel_a
 gc.collect()
 
 try:
+
     c2b = crop_to(skimage.io.imread(str(path2b)), shape, offset1)
     print()
     print("Building second panel")
-    panel_b = build_panel(c1, c2b, bmask, bsize, out_scale, dmax, pool)
+    panel_b, dist_b = build_panel(c1, c2b, bmask, bsize, out_scale, dmax, pool)
     print("    saving")
-    skimage.io.imsave('Figure_1F.tif', panel_b, check_contrast=False)
+    skimage.io.imsave('Figure_1F_image.tif', panel_b, check_contrast=False)
+
+    tie_threshold = 0.05
+    logdist_a = np.log10(np.clip(dist_a, 0.1, np.inf)).reshape(-1)
+    logdist_b = np.log10(np.clip(dist_b, 0.1, np.inf)).reshape(-1)
+    grid = sns.jointplot(
+        logdist_a, logdist_b,  color='gray', kind='reg',
+        fit_reg=False, scatter=False,
+    )
+    a_win = logdist_b - logdist_a > tie_threshold
+    b_win = logdist_a - logdist_b > tie_threshold
+    ab_tie = ~(a_win | b_win)
+    for cond, color in ((a_win, 'orangered'), (b_win, 'dodgerblue'), (ab_tie, 'gray')):
+        grid.ax_joint.plot(
+            logdist_a[cond], logdist_b[cond], '.', c=color, alpha=0.1, mec='none', ms=10
+        )
+    lmin = -1.2
+    lmax = np.log10(max(np.max(dist_a), np.max(dist_b))) + 0.2
+    tmin = np.ceil(lmin)
+    tmax = np.floor(lmax)
+    grid.ax_joint.plot([lmin, lmax], [lmin, lmax], c='k', lw=0.5)
+    locator = mpl.ticker.FixedLocator(np.arange(tmin, tmax + 1, 1))
+    formatter = mpl.ticker.FuncFormatter(lambda x, pos: '{:.1f}'.format(10**x))
+    grid.ax_joint.xaxis.set_major_formatter(formatter)
+    grid.ax_joint.yaxis.set_major_formatter(formatter)
+    grid.ax_joint.xaxis.set_major_locator(locator)
+    grid.ax_joint.yaxis.set_major_locator(locator)
+    grid.set_axis_labels('A error (pixels)', 'B error (pixels)')
+    grid.fig.tight_layout()
+
 except IOError:
     print("Skipping second panel (could not read file)")
 
