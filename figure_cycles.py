@@ -10,7 +10,8 @@ import skimage.color
 import skimage.feature
 import skimage.io
 import skimage.morphology
-import skimage.transform
+import skimage.measure
+import skimage.util
 
 
 def pool_apply_blocked(pool, w, func, img1, img2, *args):
@@ -84,10 +85,7 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     print("    composing image")
     panel = heatmap[:img1.shape[0], :img1.shape[1], :]
     compose(panel, img1, pool)
-    panel = skimage.transform.rescale(
-        panel, 1 / out_scale, multichannel=True, anti_aliasing=False
-    )
-    panel = skimage.img_as_ubyte(panel)
+    panel = downscale(panel, out_scale)
     return panel
 
 
@@ -100,6 +98,42 @@ def crop_to(img, shape, offset=None):
     # Above check should have handled this, but let's be sure.
     assert out.shape == tuple(shape)
     return out
+
+
+def mean_round_sametype(a, axis=None):
+    """Compute mean, round, and cast back to original dtype (typically int)."""
+    return a.mean(axis=axis).round().astype(a.dtype)
+
+
+def block_reduce_nopad(image, block_size, func=np.sum, cval=0):
+    """Like block_reduce but requires image.shape is multiple of block_size"""
+    if len(block_size) != image.ndim:
+        raise ValueError(
+            "`block_size` must have the same length as `image.shape`."
+        )
+    # This check lets us skip calling np.pad, which always returns a copy.
+    if (np.array(image.shape) % block_size).any():
+        raise ValueError(
+            "`image.shape` must be an integer multiple of `block_size`."
+        )
+    blocked = skimage.util.view_as_blocks(image, block_size)
+    return func(blocked, axis=tuple(range(image.ndim, blocked.ndim)))
+
+
+def downscale(image, block_width):
+    """Downscale 2D or 3D image using as little extra memory as possible."""
+    if image.shape[0] % block_width or image.shape[1] % block_width:
+        raise ValueError(
+            "`image` width and height must be a multiple of `block_width`."
+        )
+    block_size = (block_width, block_width)
+    if image.ndim == 2:
+        pass
+    elif image.ndim == 3:
+        block_size = block_size + (1,)
+    else:
+        raise ValueError("`image` must be 2-D or 3-D")
+    return block_reduce_nopad(image, block_size, func=mean_round_sametype)
 
 
 # First cycle Ashlar image.
@@ -121,11 +155,12 @@ print("Performing global image alignment")
 img1 = skimage.io.imread(str(path1))
 img2a = skimage.io.imread(str(path2a))
 its = np.minimum(img1.shape, img2a.shape)
-c1 = crop_to(img1, its)
-c2a = crop_to(img2a, its)
+its_round = its // ga_downscale * ga_downscale
+c1 = crop_to(img1, its_round)
+c2a = crop_to(img2a, its_round)
 
-r1 = skimage.transform.rescale(c1, 1 / ga_downscale, anti_aliasing=False)
-r2 = skimage.transform.rescale(c2a, 1 / ga_downscale, anti_aliasing=False)
+r1 = downscale(c1, ga_downscale)
+r2 = downscale(c2a, ga_downscale)
 shift, _, _ = skimage.feature.register_translation(r1, r2, ga_downscale)
 shift = (shift * ga_downscale).astype(int)
 print(f"Global shift for independent stitch is x,y={shift[::-1]}")
@@ -133,7 +168,7 @@ print(f"Global shift for independent stitch is x,y={shift[::-1]}")
 border = np.abs(shift)
 offset1 = border
 offset2 = border - shift
-shape = its - border
+shape = (its - border) // bsize * bsize
 c1 = crop_to(img1, shape, offset1)
 c2a = crop_to(img2a, shape, offset2)
 
