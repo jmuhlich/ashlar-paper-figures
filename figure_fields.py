@@ -23,6 +23,9 @@ def idx2hue(i, n):
 
 # Curated tile lists that produce a good figure.
 known_datasets = {
+    'COLNOR69MW2-cycle-0.ome.tif': [
+        '???', [351, 352, 380, 381]
+    ],
     'COLNOR69MW2@20191106_172134_384761.rcpnl': [
         'TNP_PILOT2', [386, 387, 357, 358]
     ],
@@ -47,10 +50,10 @@ else:
             print(f"  {loc} ... {name}")
         sys.exit(1)
 
-reader = BioformatsReader.from_path(file_path)
+reader = BioformatsReader.from_path(str(file_path))
 tileset = reader.tileset.subset(tile_numbers)
 rp = ashlar.RegistrationProcess(
-    tileset=tileset, channel_number=0, num_permutations=20
+    tileset=tileset, channel_number=0, max_permutations=20
 )
 tiles = [rp.get_tile(t) for t in range(len(tileset))]
 
@@ -75,6 +78,7 @@ alignments = sorted(alignments, key=lambda x: x.plane_alignment.error)[:3]
 edge_shifts = {a.tile_indexes: a.get_shift(a.tile_index_2) for a in alignments}
 positions = tileset.positions - origin
 new_positions = positions.copy()
+#positions *= 0.995
 g = nx.DiGraph(list(edge_shifts))
 for target, path in nx.algorithms.single_source_shortest_path(g, 0).items():
     for u, v in zip(path[:-1], path[1:]):
