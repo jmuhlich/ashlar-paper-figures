@@ -7,7 +7,7 @@ import tqdm
 import gc
 import numpy as np
 import skimage.color
-import skimage.feature
+import skimage.registration
 import skimage.io
 import skimage.morphology
 import skimage.measure
@@ -16,25 +16,27 @@ import seaborn as sns
 import matplotlib as mpl
 
 
-def pool_apply_blocked(pool, w, func, img1, img2, *args):
+def pool_apply_blocked(pool, w, func, img1, img2, desc, *args, **kwargs):
     assert img1.shape[:2] == img2.shape[:2]
     range_y = range(0, img1.shape[0], w)
     range_x = range(0, img2.shape[1], w)
     futures = []
     for y, x in itertools.product(range_y, range_x):
         f = pool.submit(
-            func, img1[y:y+w, x:x+w], img2[y:y+w, x:x+w], *args
+            func, img1[y:y+w, x:x+w], img2[y:y+w, x:x+w], *args, **kwargs
         )
         futures.append(f)
-    show_progress(futures)
+    show_progress(futures, desc)
     results = [f.result() for f in futures]
     results = np.reshape(results, (len(range_y), len(range_x), -1))
     return results
 
 
-def show_progress(futures):
+def show_progress(futures, desc=None):
     n = len(futures)
-    progress = tqdm.tqdm(concurrent.futures.as_completed(futures), total=n)
+    progress = tqdm.tqdm(
+        concurrent.futures.as_completed(futures), total=n, desc=desc
+    )
     for _ in progress:
         pass
 
@@ -42,11 +44,18 @@ def show_progress(futures):
 def optical_flow(img1, img2, w, pool):
     assert img1.dtype == img2.dtype
     results = pool_apply_blocked(
-        pool, w, skimage.feature.register_translation, img1, img2, 10
+        pool, w, skimage.registration.phase_cross_correlation, img1, img2,
+        "    computing optical flow", upsample_factor=10,
     )
     shifts = results[..., 0]
     # Unwrap inner-most nested numpy arrays (register_translation shifts).
     shifts = np.stack(shifts.ravel()).reshape(shifts.shape + (-1,))
+    # skimage phase correlation tells us how to shift the second image to match
+    # the first, but we want the opposite i.e. how the second image has been
+    # shifted with respect to the first. So we reverse the shifts.
+    shifts = -shifts
+    print("    mean shift:", np.mean(shifts, axis=(0, 1)))
+    print("    median shift:", np.median(shifts, axis=(0,1)))
     angle = np.arctan2(shifts[..., 0], shifts[..., 1])
     distance = np.linalg.norm(shifts, axis=2)
     return angle, distance
@@ -67,7 +76,9 @@ def colorize(angle, distance):
 
 def compose(base, img, pool):
     in_range = skimage.exposure.exposure.intensity_range(img)
-    pool_apply_blocked(pool, 1000, compose_block, base, img, in_range)
+    pool_apply_blocked(
+        pool, 1000, compose_block, base, img, "    composing image", in_range,
+    )
 
 
 def compose_block(base, img, in_range):
@@ -78,13 +89,11 @@ def compose_block(base, img, in_range):
 
 
 def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
-    print("    computing optical flow")
     angle, distance = optical_flow(img1, img2, w, pool)
     print("    colorizing")
     dnorm = np.clip(distance, 0, dmax) / dmax
     heatmap_small = colorize(angle, dnorm) * bmask[..., None]
     heatmap = heatmap_small.repeat(w, axis=1).repeat(w, axis=0)
-    print("    composing image")
     panel = heatmap[:img1.shape[0], :img1.shape[1], :]
     compose(panel, img1, pool)
     panel = downscale(panel, out_scale)
@@ -148,7 +157,7 @@ path2b = pathlib.Path(sys.argv[3])
 ga_downscale = 10
 bsize = 200
 out_scale = 20
-dmax = 5
+dmax = 6  # ~75th percentile of dist values from MIST mosaics.
 block_threshold = 8000
 
 assert bsize % out_scale == 0, "bsize must be a multiple of out_scale"
@@ -163,7 +172,9 @@ c2a = crop_to(img2a, its_round)
 
 r1 = downscale(c1, ga_downscale)
 r2 = downscale(c2a, ga_downscale)
-shift, _, _ = skimage.feature.register_translation(r1, r2, ga_downscale)
+shift = skimage.registration.phase_cross_correlation(
+    r1, r2, upsample_factor=ga_downscale, return_error=False,
+)
 shift = (shift * ga_downscale).astype(int)
 print(f"Global shift for independent stitch is x,y={shift[::-1]}")
 
@@ -176,8 +187,7 @@ c2a = crop_to(img2a, shape, offset2)
 
 bmax = skimage.measure.block_reduce(c1, (bsize, bsize), np.max)
 bmask = bmax > block_threshold
-bmask = skimage.morphology.remove_small_objects(bmask, min_size=4)
-bmask = skimage.morphology.remove_small_holes(bmask, area_threshold=100)
+bmask = skimage.morphology.remove_small_objects(bmask, min_size=7)
 
 pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
@@ -185,9 +195,11 @@ print()
 print("Building first panel")
 panel_a, dist_a = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
 print("    saving")
-skimage.io.imsave('Figure_1E_image.tif', panel_a, check_contrast=False)
+skimage.io.imsave('Figure_2A_image.tif', panel_a, check_contrast=False)
 del img2a, c2a, panel_a
 gc.collect()
+
+np.save("dist.npy", dist_a[bmask])
 
 try:
 
@@ -196,13 +208,13 @@ try:
     print("Building second panel")
     panel_b, dist_b = build_panel(c1, c2b, bmask, bsize, out_scale, dmax, pool)
     print("    saving")
-    skimage.io.imsave('Figure_1F_image.tif', panel_b, check_contrast=False)
+    skimage.io.imsave('Figure_2B_image.tif', panel_b, check_contrast=False)
 
     tie_threshold = 0.05
-    logdist_a = np.log10(np.clip(dist_a, 0.1, np.inf)).reshape(-1)
-    logdist_b = np.log10(np.clip(dist_b, 0.1, np.inf)).reshape(-1)
+    logdist_a = np.log10(np.clip(dist_a[bmask], 0.1, np.inf))
+    logdist_b = np.log10(np.clip(dist_b[bmask], 0.1, np.inf))
     grid = sns.jointplot(
-        logdist_a, logdist_b,  color='gray', kind='reg',
+        x=logdist_a, y=logdist_b,  color='gray', kind='reg',
         fit_reg=False, scatter=False,
     )
     a_win = logdist_b - logdist_a > tie_threshold
@@ -225,6 +237,7 @@ try:
     grid.ax_joint.yaxis.set_major_locator(locator)
     grid.set_axis_labels('A error (pixels)', 'B error (pixels)')
     grid.fig.tight_layout()
+    grid.fig.savefig("Figure_2_scatter.pdf")
 
 except IOError:
     print("Skipping second panel (could not read file)")
