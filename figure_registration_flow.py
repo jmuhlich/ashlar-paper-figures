@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 import itertools
 import pathlib
 import concurrent.futures
@@ -13,6 +14,7 @@ import skimage.morphology
 import skimage.measure
 import skimage.util
 import seaborn as sns
+import threadpoolctl
 import matplotlib as mpl
 
 
@@ -147,24 +149,82 @@ def downscale(image, block_width):
     return block_reduce_nopad(image, block_size, func=mean_round_sametype)
 
 
-# First cycle Ashlar image.
-path1 = pathlib.Path(sys.argv[1])
-# Later cycle comparison image, independently stitched (with any algorithm).
-path2a = pathlib.Path(sys.argv[2])
-# Later cycle Ashlar image, simultaneously stitched with first cycle.
-path2b = pathlib.Path(sys.argv[3])
+parser = argparse.ArgumentParser(
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    description="Compute block-based optical flow analysis on two images",
+)
+parser.add_argument(
+    "image1_path", metavar="image1.tif", type=pathlib.Path,
+    help="First (fixed) image path",
+)
+parser.add_argument(
+    "image2_path", metavar="image2.tif", type=pathlib.Path,
+    help="Second (moving) image TIFF path",
+)
+parser.add_argument(
+    "output_path", metavar="output.tif", type=pathlib.Path,
+    help="Output image path",
+)
+parser.add_argument(
+    "--data-output", metavar="data.npy", type=pathlib.Path,
+    help="Output flow magnitudes NumPy array (.npy) path",
+)
+parser.add_argument(
+    "--registration-downsample", type=int, default=10,
+    help="Factor by which to downsample the images before performing the"
+    " initial global rigid registration step. Increasing this value reduces"
+    " RAM and CPU usage at the expense of registration accuracy.",
+)
+parser.add_argument(
+    "--block-size", type=int, default=200,
+    help="Width in pixels of the square blocks used to compute the coarse"
+    " optical flow field. Each block will be assigned a single flow direction"
+    " and magnitude. Must be a multiple of output-downsample (see below).",
+)
+parser.add_argument(
+    "--output-downsample", type=int, default=20,
+    help="Factor by which to downsample the final output image. Must be an"
+    " integer factor of block-size (see above)."
+)
+parser.add_argument(
+    "--max-distance", type=float, default=6,
+    help="Large flow magnitudes (outliers) will be clamped down to this value"
+    " for the purpose of rendering the output image. The values saved to the"
+    " .npy file will not be clamped.",
+)
+parser.add_argument(
+    "--intensity-threshold", type=float, default=8000,
+    help="Image blocks with no pixel brighter than this value will be considered"
+    " background and excluded from the optical flow analysis. These blocks will"
+    " be fully black in the output image and will not be represented in the"
+    " data-output file (if used).",
+)
+parser.add_argument(
+    "--area-threshold", type=int, default=7,
+    help="Isolated regions of the image smaller than this number of blocks will"
+    " be considered background and excluded from analysis (see the description"
+    " of intensity-threshold above for what this exclusion entails).",
+)
+args = parser.parse_args()
 
-ga_downscale = 10
-bsize = 200
-out_scale = 20
-dmax = 6  # ~75th percentile of dist values from MIST mosaics.
-block_threshold = 8000
+threadpoolctl.threadpool_limits(1)
 
+ga_downscale = args.registration_downsample
+bsize = args.block_size
+out_scale = args.output_downsample
+dmax = args.max_distance
+block_threshold = args.intensity_threshold
+
+assert args.image1_path.suffix.lower().endswith(".tif")
+assert args.image2_path.suffix.lower().endswith(".tif")
+assert args.output_path.suffix.lower().endswith(".tif")
+if args.data_output:
+    assert args.data_output.suffix.endswith(".npy")
 assert bsize % out_scale == 0, "bsize must be a multiple of out_scale"
 
 print("Performing global image alignment")
-img1 = skimage.io.imread(str(path1))
-img2a = skimage.io.imread(str(path2a))
+img1 = skimage.io.imread(args.image1_path)
+img2a = skimage.io.imread(args.image2_path)
 its = np.minimum(img1.shape, img2a.shape)
 its_round = its // ga_downscale * ga_downscale
 c1 = crop_to(img1, its_round)
@@ -179,67 +239,30 @@ shift = (shift * ga_downscale).astype(int)
 print(f"Global shift for independent stitch is x,y={shift[::-1]}")
 
 border = np.abs(shift)
-offset1 = border
-offset2 = border - shift
+offset1 = np.zeros(2, int)
+offset2 = shift.copy()
+for d in 0, 1:
+    if offset2[d] < 0:
+        offset1[d] = -shift[d]
+        offset2[d] = 0
+
 shape = (its - border) // bsize * bsize
 c1 = crop_to(img1, shape, offset1)
 c2a = crop_to(img2a, shape, offset2)
 
 bmax = skimage.measure.block_reduce(c1, (bsize, bsize), np.max)
 bmask = bmax > block_threshold
-bmask = skimage.morphology.remove_small_objects(bmask, min_size=7)
+bmask = skimage.morphology.remove_small_objects(bmask, min_size=args.area_threshold)
 
 pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
 print()
-print("Building first panel")
+print("Building output image")
 panel_a, dist_a = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
 print("    saving")
-skimage.io.imsave('Figure_2A_image.tif', panel_a, check_contrast=False)
-del img2a, c2a, panel_a
-gc.collect()
+skimage.io.imsave(args.output_path, panel_a, check_contrast=False)
 
-np.save("dist.npy", dist_a[bmask])
-
-try:
-
-    c2b = crop_to(skimage.io.imread(str(path2b)), shape, offset1)
-    print()
-    print("Building second panel")
-    panel_b, dist_b = build_panel(c1, c2b, bmask, bsize, out_scale, dmax, pool)
-    print("    saving")
-    skimage.io.imsave('Figure_2B_image.tif', panel_b, check_contrast=False)
-
-    tie_threshold = 0.05
-    logdist_a = np.log10(np.clip(dist_a[bmask], 0.1, np.inf))
-    logdist_b = np.log10(np.clip(dist_b[bmask], 0.1, np.inf))
-    grid = sns.jointplot(
-        x=logdist_a, y=logdist_b,  color='gray', kind='reg',
-        fit_reg=False, scatter=False,
-    )
-    a_win = logdist_b - logdist_a > tie_threshold
-    b_win = logdist_a - logdist_b > tie_threshold
-    ab_tie = ~(a_win | b_win)
-    for cond, color in ((a_win, 'orangered'), (b_win, 'dodgerblue'), (ab_tie, 'gray')):
-        grid.ax_joint.plot(
-            logdist_a[cond], logdist_b[cond], '.', c=color, alpha=0.1, mec='none', ms=10
-        )
-    lmin = -1.2
-    lmax = np.log10(max(np.max(dist_a), np.max(dist_b))) + 0.2
-    tmin = np.ceil(lmin)
-    tmax = np.floor(lmax)
-    grid.ax_joint.plot([lmin, lmax], [lmin, lmax], c='k', lw=0.5)
-    locator = mpl.ticker.FixedLocator(np.arange(tmin, tmax + 1, 1))
-    formatter = mpl.ticker.FuncFormatter(lambda x, pos: '{:.1f}'.format(10**x))
-    grid.ax_joint.xaxis.set_major_formatter(formatter)
-    grid.ax_joint.yaxis.set_major_formatter(formatter)
-    grid.ax_joint.xaxis.set_major_locator(locator)
-    grid.ax_joint.yaxis.set_major_locator(locator)
-    grid.set_axis_labels('A error (pixels)', 'B error (pixels)')
-    grid.fig.tight_layout()
-    grid.fig.savefig("Figure_2_scatter.pdf")
-
-except IOError:
-    print("Skipping second panel (could not read file)")
+if args.data_output:
+    np.save(args.data_output, dist_a[bmask])
 
 pool.shutdown()
