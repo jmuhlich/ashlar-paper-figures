@@ -240,10 +240,10 @@ print(f"Global shift for independent stitch is x,y={shift[::-1]}")
 
 border = np.abs(shift)
 offset1 = np.zeros(2, int)
-offset2 = shift.copy()
+offset2 = -shift
 for d in 0, 1:
     if offset2[d] < 0:
-        offset1[d] = -shift[d]
+        offset1[d] = shift[d]
         offset2[d] = 0
 
 shape = (its - border) // bsize * bsize
