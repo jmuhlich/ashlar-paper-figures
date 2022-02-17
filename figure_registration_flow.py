@@ -91,14 +91,16 @@ def compose_block(base, img, in_range):
 
 
 def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
+    assert w % out_scale == 0
+    assert np.all(np.mod(img1.shape, w) == 0)
     angle, distance = optical_flow(img1, img2, w, pool)
     print("    colorizing")
     dnorm = np.clip(distance, 0, dmax) / dmax
     heatmap_small = colorize(angle, dnorm) * bmask[..., None]
-    heatmap = heatmap_small.repeat(w, axis=1).repeat(w, axis=0)
-    panel = heatmap[:img1.shape[0], :img1.shape[1], :]
-    compose(panel, img1, pool)
-    panel = downscale(panel, out_scale)
+    hs = w // out_scale
+    panel = heatmap_small.repeat(hs, axis=1).repeat(hs, axis=0)
+    img1_scaled = downscale(img1, out_scale)
+    compose(panel, img1_scaled, pool)
     return panel, distance
 
 
