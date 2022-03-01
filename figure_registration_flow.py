@@ -13,6 +13,7 @@ import skimage.io
 import skimage.morphology
 import skimage.measure
 import skimage.util
+import sklearn.linear_model
 import seaborn as sns
 import threadpoolctl
 import matplotlib as mpl
@@ -56,11 +57,7 @@ def optical_flow(img1, img2, w, pool):
     # the first, but we want the opposite i.e. how the second image has been
     # shifted with respect to the first. So we reverse the shifts.
     shifts = -shifts
-    print("    mean shift:", np.mean(shifts, axis=(0, 1)))
-    print("    median shift:", np.median(shifts, axis=(0,1)))
-    angle = np.arctan2(shifts[..., 0], shifts[..., 1])
-    distance = np.linalg.norm(shifts, axis=2)
-    return angle, distance
+    return shifts
 
 
 def colorize(angle, distance):
@@ -93,7 +90,19 @@ def compose_block(base, img, in_range):
 def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     assert w % out_scale == 0
     assert np.all(np.mod(img1.shape, w) == 0)
-    angle, distance = optical_flow(img1, img2, w, pool)
+    shifts = optical_flow(img1, img2, w, pool)
+    p1 = np.dstack(np.meshgrid(
+        range(shifts.shape[0]), range(shifts.shape[1]), indexing='ij'
+    ))
+    p1 *= w
+    p2 = p1 + shifts
+    lr = sklearn.linear_model.LinearRegression()
+    lr.fit(p1[bmask], p2[bmask])
+    shifts = (p2 - lr.intercept_) @ np.linalg.inv(lr.coef_.T) - p1
+    print("    mean shift:", np.mean(shifts, axis=(0, 1)))
+    print("    median shift:", np.median(shifts, axis=(0,1)))
+    angle = np.arctan2(shifts[..., 0], shifts[..., 1])
+    distance = np.linalg.norm(shifts, axis=2)
     print("    colorizing")
     dnorm = np.clip(distance, 0, dmax) / dmax
     heatmap_small = colorize(angle, dnorm) * bmask[..., None]
@@ -101,7 +110,7 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     panel = heatmap_small.repeat(hs, axis=1).repeat(hs, axis=0)
     img1_scaled = downscale(img1, out_scale)
     compose(panel, img1_scaled, pool)
-    return panel, distance
+    return panel, distance, shifts
 
 
 def crop_to(img, shape, offset=None):
@@ -260,7 +269,7 @@ pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
 print()
 print("Building output image")
-panel_a, dist_a = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
+panel_a, dist_a, shifts = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
 print("    saving")
 skimage.io.imsave(args.output_path, panel_a, check_contrast=False)
 
