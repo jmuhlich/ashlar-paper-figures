@@ -28,8 +28,8 @@ def pool_apply_blocked(pool, w, func, img1, img2, desc, *args, **kwargs):
         )
         futures.append(f)
     show_progress(futures, desc)
-    results = [f.result() for f in futures]
-    results = np.reshape(results, (len(range_y), len(range_x), -1))
+    results = np.array([f.result() for f in futures], dtype=object)
+    results = results.reshape(len(range_y), len(range_x), -1)
     return results
 
 
@@ -89,6 +89,7 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     assert w % out_scale == 0
     assert np.all(np.mod(img1.shape, w) == 0)
     shifts = optical_flow(img1, img2, w, pool)
+
     p1 = np.dstack(np.meshgrid(
         range(shifts.shape[0]), range(shifts.shape[1]), indexing='ij'
     ))
@@ -96,9 +97,27 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     p2 = p1 + shifts
     lr = sklearn.linear_model.LinearRegression()
     lr.fit(p1[bmask], p2[bmask])
+    det = np.linalg.det(lr.coef_)
+    assert det != 0, "Degenerate matrix"
+    (a, b), (c, d) = lr.coef_
+    scale_y = np.linalg.norm([a, b])
+    scale_x = det / scale_y
+    shear = (a * c + b * d) / det
+    rotation = np.arctan2(b, a)
+    print("    recovered affine transform: ")
+    print(f"      scale = [{scale_y:.3g} {scale_x:.3g}]")
+    print(f"      shear = {shear:.3g}")
+    print(f"      rotation = {rotation:.3g}")
+    if np.allclose(lr.coef_, np.eye(2), atol=1e-4, rtol=1e-4):
+        print("      (no significant affine correction needed)")
+    else:
+        print("      (affine correction is non-trivial)")
+
     shifts = (p2 - lr.intercept_) @ np.linalg.inv(lr.coef_.T) - p1
-    print("    mean shift:", np.mean(shifts, axis=(0, 1)))
-    print("    median shift:", np.median(shifts, axis=(0,1)))
+    with np.printoptions(precision=3):
+        print("    mean shift:", np.mean(shifts, axis=(0, 1)))
+        print("    median shift:", np.median(shifts, axis=(0,1)))
+
     angle = np.arctan2(shifts[..., 0], shifts[..., 1])
     distance = np.linalg.norm(shifts, axis=2)
     print("    colorizing")
@@ -260,6 +279,7 @@ its_round = its // ga_downscale * ga_downscale
 c1 = crop_to(img1, its_round)
 c2 = crop_to(img2, its_round)
 
+print()
 print("Performing global image alignment")
 r1 = downscale(c1, ga_downscale)
 r2 = downscale(c2, ga_downscale)
@@ -267,7 +287,7 @@ shift = skimage.registration.phase_cross_correlation(
     r1, r2, upsample_factor=ga_downscale, return_error=False,
 )
 shift = (shift * ga_downscale).astype(int)
-print(f"Global shift for independent stitch is x,y={shift[::-1]}")
+print(f"    shift (y,x)={shift}")
 
 border = np.abs(shift)
 offset1 = np.zeros(2, int)
