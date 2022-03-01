@@ -1,6 +1,7 @@
 import sys
 import os
 import argparse
+import re
 import itertools
 import pathlib
 import concurrent.futures
@@ -181,6 +182,10 @@ parser.add_argument(
     help="Output flow magnitudes NumPy array (.npy) path",
 )
 parser.add_argument(
+    "--crop", metavar="LEFT,RIGHT,TOP,BOTTOM",
+    help="Pixel coordinates for cropping the input images before processing"
+)
+parser.add_argument(
     "--registration-downsample", type=int, default=10,
     help="Factor by which to downsample the images before performing the"
     " initial global rigid registration step. Increasing this value reduces"
@@ -231,16 +236,27 @@ assert args.image2_path.suffix.lower().endswith(".tif")
 assert args.output_path.suffix.lower().endswith(".tif")
 if args.data_output:
     assert args.data_output.suffix.endswith(".npy")
-assert bsize % out_scale == 0, "bsize must be a multiple of out_scale"
+assert bsize % out_scale == 0, "block_size must be a multiple of output_downsample"
+if args.crop:
+    cmatch = re.match(r"(\d+),(\d+),(\d+),(\d+)$", args.crop)
+    assert cmatch, "crop must be 4 integer values separated by commas (no spaces)"
+    cxmin, cxmax, cymin, cymax = [int(x) for x in cmatch.groups()]
 
-print("Performing global image alignment")
+print("Loading images")
 img1 = skimage.io.imread(args.image1_path)
 img2a = skimage.io.imread(args.image2_path)
+assert cxmin >= 0 and cymin >= 0, "LEFT and TOP crop values must be >= 0"
+for iimg, iname in (img1, 'image1'), (img2a, 'image2'):
+    assert cxmax < iimg.shape[1], f"RIGHT crop value exceeds {iname} width"
+    assert cymax < iimg.shape[0], f"BOTTOM crop value exceeds {iname} height"
+img1 = img1[cymin:cymax+1, cxmin:cxmax+1]
+img2a = img2a[cymin:cymax+1, cxmin:cxmax+1]
 its = np.minimum(img1.shape, img2a.shape)
 its_round = its // ga_downscale * ga_downscale
 c1 = crop_to(img1, its_round)
 c2a = crop_to(img2a, its_round)
 
+print("Performing global image alignment")
 r1 = downscale(c1, ga_downscale)
 r2 = downscale(c2a, ga_downscale)
 shift = skimage.registration.phase_cross_correlation(
