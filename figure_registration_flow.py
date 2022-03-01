@@ -1,4 +1,3 @@
-import sys
 import os
 import argparse
 import re
@@ -6,18 +5,16 @@ import itertools
 import pathlib
 import concurrent.futures
 import tqdm
-import gc
 import numpy as np
 import skimage.color
 import skimage.registration
-import skimage.io
 import skimage.morphology
 import skimage.measure
 import skimage.util
+import tifffile
 import sklearn.linear_model
-import seaborn as sns
 import threadpoolctl
-import matplotlib as mpl
+import zarr
 
 
 def pool_apply_blocked(pool, w, func, img1, img2, desc, *args, **kwargs):
@@ -240,25 +237,32 @@ assert bsize % out_scale == 0, "block_size must be a multiple of output_downsamp
 if args.crop:
     cmatch = re.match(r"(\d+),(\d+),(\d+),(\d+)$", args.crop)
     assert cmatch, "crop must be 4 integer values separated by commas (no spaces)"
-    cxmin, cxmax, cymin, cymax = [int(x) for x in cmatch.groups()]
+    args.crop = [int(x) for x in cmatch.groups()]
 
 print("Loading images")
-img1 = skimage.io.imread(args.image1_path)
-img2a = skimage.io.imread(args.image2_path)
-assert cxmin >= 0 and cymin >= 0, "LEFT and TOP crop values must be >= 0"
-for iimg, iname in (img1, 'image1'), (img2a, 'image2'):
-    assert cxmax < iimg.shape[1], f"RIGHT crop value exceeds {iname} width"
-    assert cymax < iimg.shape[0], f"BOTTOM crop value exceeds {iname} height"
-img1 = img1[cymin:cymax+1, cxmin:cxmax+1]
-img2a = img2a[cymin:cymax+1, cxmin:cxmax+1]
-its = np.minimum(img1.shape, img2a.shape)
+tiff1 = tifffile.TiffFile(args.image1_path)
+tiff2 = tifffile.TiffFile(args.image2_path)
+z1 = zarr.open(tiff1.aszarr())
+z2 = zarr.open(tiff2.aszarr())
+if args.crop:
+    cxmin, cxmax, cymin, cymax = args.crop
+    assert cxmin >= 0 and cymin >= 0, "LEFT and TOP crop values must be >= 0"
+    for za, iname in (z1, 'image1'), (z2, 'image2'):
+        assert cxmax < za.shape[1], f"RIGHT crop value exceeds {iname} width"
+        assert cymax < za.shape[0], f"BOTTOM crop value exceeds {iname} height"
+    img1 = z1[cymin:cymax+1, cxmin:cxmax+1]
+    img2 = z2[cymin:cymax+1, cxmin:cxmax+1]
+else:
+    img1 = z1[:]
+    img2 = z2[:]
+its = np.minimum(img1.shape, img2.shape)
 its_round = its // ga_downscale * ga_downscale
 c1 = crop_to(img1, its_round)
-c2a = crop_to(img2a, its_round)
+c2 = crop_to(img2, its_round)
 
 print("Performing global image alignment")
 r1 = downscale(c1, ga_downscale)
-r2 = downscale(c2a, ga_downscale)
+r2 = downscale(c2, ga_downscale)
 shift = skimage.registration.phase_cross_correlation(
     r1, r2, upsample_factor=ga_downscale, return_error=False,
 )
@@ -275,7 +279,7 @@ for d in 0, 1:
 
 shape = (its - border) // bsize * bsize
 c1 = crop_to(img1, shape, offset1)
-c2a = crop_to(img2a, shape, offset2)
+c2 = crop_to(img2, shape, offset2)
 
 bmax = skimage.measure.block_reduce(c1, (bsize, bsize), np.max)
 bmask = bmax > block_threshold
@@ -285,11 +289,11 @@ pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
 print()
 print("Building output image")
-panel_a, dist_a, shifts = build_panel(c1, c2a, bmask, bsize, out_scale, dmax, pool)
+panel, dist, shifts = build_panel(c1, c2, bmask, bsize, out_scale, dmax, pool)
 print("    saving")
-skimage.io.imsave(args.output_path, panel_a, check_contrast=False)
+skimage.io.imsave(args.output_path, panel, check_contrast=False)
 
 if args.data_output:
-    np.save(args.data_output, dist_a[bmask])
+    np.save(args.data_output, dist[bmask])
 
 pool.shutdown()
