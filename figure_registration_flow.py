@@ -1,10 +1,12 @@
 import os
+import sys
 import argparse
 import re
 import itertools
 import pathlib
 import concurrent.futures
 import tqdm
+import matplotlib.pyplot as plt
 import numpy as np
 import skimage.color
 import skimage.registration
@@ -237,6 +239,12 @@ parser.add_argument(
     " be considered background and excluded from analysis (see the description"
     " of intensity-threshold above for what this exclusion entails).",
 )
+parser.add_argument(
+    "--display-threshold-only", action="store_true",
+    help="Visualizes the foreground mask in a window, then skips the optical"
+    " flow computation and all file output. The foreground is colored cyan and"
+    " the background colored red."
+)
 args = parser.parse_args()
 
 threadpoolctl.threadpool_limits(1)
@@ -279,15 +287,19 @@ its_round = its // ga_downscale * ga_downscale
 c1 = crop_to(img1, its_round)
 c2 = crop_to(img2, its_round)
 
-print()
-print("Performing global image alignment")
+if not args.display_threshold_only:
+    print()
+    print("Performing global image alignment")
 r1 = downscale(c1, ga_downscale)
 r2 = downscale(c2, ga_downscale)
-shift = skimage.registration.phase_cross_correlation(
-    r1, r2, upsample_factor=ga_downscale, return_error=False,
-)
-shift = (shift * ga_downscale).astype(int)
-print(f"    shift (y,x)={shift}")
+if not args.display_threshold_only:
+    shift = skimage.registration.phase_cross_correlation(
+        r1, r2, upsample_factor=ga_downscale, return_error=False,
+    )
+    shift = (shift * ga_downscale).astype(int)
+    print(f"    shift (y,x)={shift}")
+else:
+    shift = np.zeros(2, dtype=int)
 
 border = np.abs(shift)
 offset1 = np.zeros(2, int)
@@ -301,9 +313,27 @@ shape = (its - border) // bsize * bsize
 c1 = crop_to(img1, shape, offset1)
 c2 = crop_to(img2, shape, offset2)
 
+print()
+print("Computing foreground image mask")
 bmax = skimage.measure.block_reduce(c1, (bsize, bsize), np.max)
 bmask = bmax > block_threshold
 bmask = skimage.morphology.remove_small_objects(bmask, min_size=args.area_threshold)
+
+if args.display_threshold_only:
+    s = bsize // ga_downscale
+    bmask_upscaled = bmask.repeat(s, axis=1).repeat(s, axis=0)
+    threshold_img = skimage.util.img_as_float(crop_to(r1, bmask_upscaled.shape))
+    k = threshold_img.max() / 2
+    threshold_img = (threshold_img[..., None]).repeat(3, axis=2)
+    threshold_img[..., 0] += ~bmask_upscaled * k
+    threshold_img[..., 1] += bmask_upscaled * k
+    threshold_img[..., 2] += bmask_upscaled * k
+    threshold_img = skimage.exposure.rescale_intensity(threshold_img)
+    plt.imshow(threshold_img.clip(0, 1))
+    plt.show()
+    sys.exit()
+assert np.any(bmask), "Entire image was discarded as background; please" \
+    " adjust --intensity-threshold and/or --area-threshold values"
 
 pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
