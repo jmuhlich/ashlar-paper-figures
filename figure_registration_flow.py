@@ -73,21 +73,31 @@ def colorize(angle, distance):
     return img
 
 
-def compose(base, img, pool):
-    in_range = skimage.exposure.exposure.intensity_range(img)
+def compose(base, img, pool, brightness, in_range="image"):
     pool_apply_blocked(
-        pool, 1000, compose_block, base, img, "    composing image", in_range,
+        pool,
+        1000,
+        compose_block,
+        base,
+        img,
+        "    composing image",
+        brightness,
+        in_range,
     )
 
 
-def compose_block(base, img, in_range):
-    img = skimage.exposure.rescale_intensity(img, in_range=in_range)
-    block = skimage.img_as_float(base) + skimage.img_as_float(img)[..., None]
+def compose_block(base, img, brightness, in_range):
+    img = skimage.exposure.rescale_intensity(
+        img, in_range=in_range, out_range=float
+    )
+    block = skimage.img_as_float(base) + img[..., None] * brightness
     block = skimage.img_as_ubyte(np.clip(block, 0, 1))
     base[:] = block
 
 
-def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
+def build_panel(
+    img1, img2, bmask, w, out_scale, dmax, brightness, intensity_pct, pool
+):
     assert w % out_scale == 0
     assert np.all(np.mod(img1.shape, w) == 0)
     shifts = optical_flow(img1, img2, w, pool)
@@ -111,7 +121,7 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     print(f"      shear = {shear:.3g}")
     print(f"      rotation = {rotation:.3g}")
     if np.allclose(lr.coef_, np.eye(2), atol=1e-4, rtol=1e-4):
-        print("      (no significant affine correction needed)")
+        print("      (affine correction is trivial)")
     else:
         print("      (affine correction is non-trivial)")
 
@@ -128,7 +138,10 @@ def build_panel(img1, img2, bmask, w, out_scale, dmax, pool):
     hs = w // out_scale
     panel = heatmap_small.repeat(hs, axis=1).repeat(hs, axis=0)
     img1_scaled = downscale(img1, out_scale)
-    compose(panel, img1_scaled, pool)
+    kwargs = {}
+    if intensity_pct:
+        kwargs["in_range"] = tuple(np.percentile(img1_scaled, intensity_pct))
+    compose(panel, img1_scaled, pool, brightness=brightness, **kwargs)
     return panel, distance, shifts
 
 
@@ -219,6 +232,18 @@ parser.add_argument(
     "--output-downsample", type=int, default=20,
     help="Factor by which to downsample the final output image. Must be an"
     " integer factor of block-size (see above)."
+)
+parser.add_argument(
+    "--output-contrast-percentile", type=float, nargs=2, default=None,
+    metavar=("LOWER", "UPPER"),
+    help="Lower and upper brightness percentile for contrast rescaling. The"
+    " reference image's brightness and contrast will be scaled to place these"
+    " values at the bottom and top end of the brightness scale, respectively."
+    " If not specified, the image's actual dynamic range will be used."
+)
+parser.add_argument(
+    "--output-brightness-scale", type=float, default=1.0, metavar="SCALE",
+    help="Multipler for reference image intensity in the output image.",
 )
 parser.add_argument(
     "--max-distance", type=float, default=6,
@@ -339,7 +364,17 @@ pool = concurrent.futures.ThreadPoolExecutor(len(os.sched_getaffinity(0)))
 
 print()
 print("Building output image")
-panel, dist, shifts = build_panel(c1, c2, bmask, bsize, out_scale, dmax, pool)
+panel, dist, shifts = build_panel(
+    c1,
+    c2,
+    bmask,
+    bsize,
+    out_scale,
+    dmax,
+    args.output_brightness_scale,
+    args.output_contrast_percentile,
+    pool,
+)
 print("    saving")
 skimage.io.imsave(args.output_path, panel, check_contrast=False)
 
