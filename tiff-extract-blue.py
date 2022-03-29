@@ -22,8 +22,10 @@ tiff = tifffile.TiffFile(args.in_path)
 assert tiff.series[0].axes == "YXS", "Input TIFF must be RGB"
 assert tiff.series[0].dtype == "uint8", "Input TIFF must be 8-bit"
 z = zarr.open(tiff.series[0].aszarr())
+if isinstance(z, zarr.hierarchy.Group):
+    z = z[0]
 print("Reading blue channel")
-img = z[0][..., 2]
+img = z[..., 2]
 print("Inverting image")
 np.subtract(255, img, out=img)
 print(f"Saving to {args.out_path}")
