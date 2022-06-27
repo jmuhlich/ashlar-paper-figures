@@ -192,6 +192,20 @@ def downscale(image, block_width):
     return block_reduce_nopad(image, block_size, func=mean_round_sametype)
 
 
+def read_tiff_channel(path, channel):
+    tiff = tifffile.TiffFile(path)
+    try:
+        zstore = tiff.aszarr(level=0, key=channel)
+    except IndexError:
+        raise ValueError(
+            f"Selected channel ({channel}) out of range: {path}"
+        ) from None
+    img = zarr.open(zstore)
+    if img.ndim != 2:
+        raise ValueError(f"TIFF must be 2-D or 3-D: {path}")
+    return img
+
+
 parser = argparse.ArgumentParser(
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     description="Compute block-based optical flow analysis on two images",
@@ -207,6 +221,14 @@ parser.add_argument(
 parser.add_argument(
     "output_path", metavar="output.tif", type=pathlib.Path,
     help="Output image path",
+)
+parser.add_argument(
+    "--image1-channel", metavar="CHANNEL", type=int, default=0,
+    help="Channel number to read from image1",
+)
+parser.add_argument(
+    "--image2-channel", metavar="CHANNEL", type=int, default=0,
+    help="Channel number to read from image2",
 )
 parser.add_argument(
     "--data-output", metavar="data.npy", type=pathlib.Path,
@@ -292,10 +314,8 @@ if args.crop:
     args.crop = [int(x) for x in cmatch.groups()]
 
 print("Loading images")
-tiff1 = tifffile.TiffFile(args.image1_path)
-tiff2 = tifffile.TiffFile(args.image2_path)
-z1 = zarr.open(tiff1.aszarr())
-z2 = zarr.open(tiff2.aszarr())
+z1 = read_tiff_channel(args.image1_path, args.image1_channel)
+z2 = read_tiff_channel(args.image2_path, args.image2_channel)
 if args.crop:
     cxmin, cxmax, cymin, cymax = args.crop
     assert cxmin >= 0 and cymin >= 0, "LEFT and TOP crop values must be >= 0"
