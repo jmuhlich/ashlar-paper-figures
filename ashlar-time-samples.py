@@ -11,6 +11,10 @@ files = (
         'COLNOR69MW2-cycle-2.ome.tif',
     ),
     (
+        'Tonsil-Codex-1.ome.tif',
+        'Tonsil-Codex-2.ome.tif',
+    ),
+    (
         'HBM355.JDLK.244-cycle-1.ome.tif',
         'HBM355.JDLK.244-cycle-2.ome.tif',
     ),
@@ -23,13 +27,13 @@ files = (
         'Tonsil-WD-76845-02-cycle-2.ome.tif',
     ),
     (
-        'SM-243-cycle-1.ome.tif',
-        'SM-243-cycle-2.ome.tif',
-    ),
-    (
         'LSP10407-InCell6000-cycle-1.ome.tif',
         'LSP10407-InCell6000-cycle-2.ome.tif'
     ),
+    # (
+    #     'SM-243-cycle-1.ome.tif',
+    #     'SM-243-cycle-2.ome.tif',
+    # ),
     # (
     #     'LSP10407-CyteFinder-cropped-cycle-1.ome.tif',
     #     'LSP10407-CyteFinder-cropped-cycle-2.ome.tif',
@@ -39,6 +43,9 @@ files = (
     #     'LSP10407-CyteFinder-cycle-2.ome.tif',
     # ),
 )
+
+files = files[1:2]
+print(files)
 
 base_path = pathlib.Path(sys.argv[0]).parent.resolve()
 data_path = base_path / 'input' / 'raw'

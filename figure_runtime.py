@@ -14,8 +14,8 @@ labels = {
     "COLNOR69MW2": "Colon",
     "HBM355.JDLK.244": "Spleen",
     "TMA11": "TMA",
-    "Tonsil-WD-76845-02": "Tonsil",
-    "SM-243": "Brain",
+    "Tonsil-Codex": "Tonsil1",
+    "Tonsil-WD-76845-02": "Tonsil2",
     "LSP10407-InCell6000": "CRC",
 }
 
