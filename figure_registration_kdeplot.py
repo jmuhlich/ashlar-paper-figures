@@ -57,7 +57,7 @@ for (name, path), color in zip(args.inputs.items(), colors):
     )
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
-ax.set_xlabel("Registration error (pixels)")
+ax.set_xlabel("Registration error (\u00B5m)")
 ax.set_ylabel("Density")
 fig.tight_layout()
 fig.savefig(args.output)

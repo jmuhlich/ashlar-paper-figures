@@ -268,10 +268,15 @@ parser.add_argument(
     help="Multipler for reference image intensity in the output image.",
 )
 parser.add_argument(
-    "--max-distance", type=float, default=6,
+    "--pixel-size", type=float, default=1.0, metavar="MICRONS",
+    help="Size of input image pixels, in microns."
+)
+parser.add_argument(
+    "--max-distance", type=float, default=4, metavar="MICRONS",
     help="Large flow magnitudes (outliers) will be clamped down to this value"
     " for the purpose of rendering the output image. The values saved to the"
-    " .npy file will not be clamped.",
+    " .npy file will not be clamped. The value must be specified in microns"
+    " (see pixel-size), NOT in pixels.",
 )
 parser.add_argument(
     "--intensity-threshold", type=float, default=8000,
@@ -399,6 +404,6 @@ print("    saving")
 skimage.io.imsave(args.output_path, panel, check_contrast=False)
 
 if args.data_output:
-    np.save(args.data_output, dist[bmask])
+    np.save(args.data_output, dist[bmask] * args.pixel_size)
 
 pool.shutdown()
