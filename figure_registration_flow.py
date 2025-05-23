@@ -344,9 +344,9 @@ r1 = downscale(c1, ga_downscale)
 r2 = downscale(c2, ga_downscale)
 if not args.display_threshold_only:
     shift = skimage.registration.phase_cross_correlation(
-        r1, r2, upsample_factor=ga_downscale, return_error=False,
-    )
-    shift = (shift * ga_downscale).astype(int)
+        r1, r2, upsample_factor=ga_downscale,
+    )[0]
+    shift = np.multiply(shift, ga_downscale).astype(int)
     print(f"    shift (y,x)={shift}")
 else:
     shift = np.zeros(2, dtype=int)
