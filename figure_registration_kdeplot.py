@@ -5,8 +5,6 @@ import pathlib
 import seaborn as sns
 import sys
 
-colors = ["#1e90ff", "#ee5665", "#1fa23f", "#ee50ff"]
-
 parser = argparse.ArgumentParser(
     description="Plot kernel density estimates of several 1-D arrays stored in"
     " .npy files",
@@ -25,8 +23,12 @@ parser.add_argument(
 )
 args = parser.parse_args()
 assert all(':' in x for x in args.inputs), "Malformed -i value"
-assert len(args.inputs) <= len(colors), "Script needs more color values"
 args.inputs = {k: pathlib.Path(v) for k, v in (x.split(':') for x in args.inputs)}
+
+if len(args.inputs) <= 10:
+    colors = plt.cm.tab10.colors
+else:
+    colors = plt.colormaps['hsv'](np.linspace(0, 1, len(args.inputs), endpoint=False))
 
 fig, ax = plt.subplots(figsize=(6, 2.5))
 for (name, path), color in zip(args.inputs.items(), colors):
