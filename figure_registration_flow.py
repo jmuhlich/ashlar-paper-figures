@@ -239,10 +239,16 @@ parser.add_argument(
     help="Pixel coordinates for cropping the input images before processing"
 )
 parser.add_argument(
-    "--registration-downsample", type=int, default=10,
+    "--align-downsample", type=int, default=10,
     help="Factor by which to downsample the images before performing the"
-    " initial global rigid registration step. Increasing this value reduces"
-    " RAM and CPU usage at the expense of registration accuracy.",
+    " initial global rigid alignment step. Increasing this value reduces"
+    " RAM and CPU usage at the expense of alignment accuracy.",
+)
+parser.add_argument(
+    "--skip-global-align", action="store_true",
+    help="Skip global rigid alignment step. This can be used when the input"
+    " images were produced by a tool that performs its own global alignment"
+    " and you want to preserve that alignment here.",
 )
 parser.add_argument(
     "--block-size", type=int, default=200,
@@ -279,6 +285,11 @@ parser.add_argument(
     " (see pixel-size), NOT in pixels.",
 )
 parser.add_argument(
+    "--mask-image", type=int, default=1, choices=(1, 2),
+    help="Select image used for intensity- and area-based thresholding to"
+    " distinguish image foreground from background."
+)
+parser.add_argument(
     "--intensity-threshold", type=float, default=8000,
     help="Image blocks with no pixel brighter than this value will be considered"
     " background and excluded from the optical flow analysis. These blocks will"
@@ -301,10 +312,10 @@ args = parser.parse_args()
 
 threadpoolctl.threadpool_limits(1)
 
-ga_downscale = args.registration_downsample
+ga_downscale = args.align_downsample
 bsize = args.block_size
 out_scale = args.output_downsample
-dmax = args.max_distance
+dmax = args.max_distance / args.pixel_size
 block_threshold = args.intensity_threshold
 
 assert args.image1_path.suffix.lower().endswith(".tif")
@@ -327,22 +338,27 @@ if args.crop:
     for za, iname in (z1, 'image1'), (z2, 'image2'):
         assert cxmax < za.shape[1], f"RIGHT crop value exceeds {iname} width"
         assert cymax < za.shape[0], f"BOTTOM crop value exceeds {iname} height"
+    print(f"    1: {args.image1_path} :: Channel {args.image1_channel}")
     img1 = z1[cymin:cymax+1, cxmin:cxmax+1]
+    print(f"    2: {args.image2_path} :: Channel {args.image2_channel}")
     img2 = z2[cymin:cymax+1, cxmin:cxmax+1]
 else:
+    print(f"    1: {args.image1_path} :: Channel {args.image1_channel}")
     img1 = z1[:]
+    print(f"    2: {args.image2_path} :: Channel {args.image2_channel}")
     img2 = z2[:]
 its = np.minimum(img1.shape, img2.shape)
 its_round = its // ga_downscale * ga_downscale
 c1 = crop_to(img1, its_round)
 c2 = crop_to(img2, its_round)
 
-if not args.display_threshold_only:
+do_global_align = not (args.skip_global_align or args.display_threshold_only)
+if do_global_align:
     print()
     print("Performing global image alignment")
 r1 = downscale(c1, ga_downscale)
 r2 = downscale(c2, ga_downscale)
-if not args.display_threshold_only:
+if do_global_align:
     shift = skimage.registration.phase_cross_correlation(
         r1, r2, upsample_factor=ga_downscale,
     )[0]
@@ -365,13 +381,16 @@ c2 = crop_to(img2, shape, offset2)
 
 print()
 print("Computing foreground image mask")
-bmax = skimage.measure.block_reduce(c1, (bsize, bsize), np.max)
+cm = c1 if args.mask_image == 1 else c2
+bmax = skimage.measure.block_reduce(cm, (bsize, bsize), np.max)
 bmask = bmax > block_threshold
 bmask = skimage.morphology.remove_small_objects(bmask, min_size=args.area_threshold)
 
 if args.display_threshold_only:
     s = bsize // ga_downscale
     bmask_upscaled = bmask.repeat(s, axis=1).repeat(s, axis=0)
+    # FIXME: If mask_image==2 this should use r2, but the global alignment shift
+    # needs to be accounted for.
     threshold_img = skimage.util.img_as_float(crop_to(r1, bmask_upscaled.shape))
     k = threshold_img.max() / 2
     threshold_img = (threshold_img[..., None]).repeat(3, axis=2)
