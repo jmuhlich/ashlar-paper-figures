@@ -21,6 +21,11 @@ parser.add_argument(
     "-m", metavar="MAX", type=float, required=True, dest="max",
     help="Maximum X-axis value for the plot",
 )
+parser.add_argument(
+    "-b", metavar="BW_ADJUST", type=float, dest="bw_adjust", default=1.0,
+    help="Kernel density bandwidth adjustment (values below 1 make the curve"
+    " follow the data values more tightly)"
+)
 args = parser.parse_args()
 assert all(':' in x for x in args.inputs), "Malformed -i value"
 args.inputs = {k: pathlib.Path(v) for k, v in (x.split(':') for x in args.inputs)}
@@ -36,6 +41,7 @@ for (name, path), color in zip(args.inputs.items(), colors):
     kwargs = dict(
         data=np.where(data < args.max, data, args.max),
         clip=[0, args.max],
+        bw_adjust=args.bw_adjust,
         color=color,
         ax=ax,
     )
