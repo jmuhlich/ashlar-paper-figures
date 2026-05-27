@@ -328,10 +328,12 @@ if args.crop:
     cmatch = re.match(r"(\d+),(\d+),(\d+),(\d+)$", args.crop)
     assert cmatch, "crop must be 4 integer values separated by commas (no spaces)"
     args.crop = [int(x) for x in cmatch.groups()]
+assert not(args.mask_image == 2 and args.display_threshold_only)
 
 print("Loading images")
 z1 = read_tiff_channel(args.image1_path, args.image1_channel)
-z2 = read_tiff_channel(args.image2_path, args.image2_channel)
+if not args.display_threshold_only:
+    z2 = read_tiff_channel(args.image2_path, args.image2_channel)
 if args.crop:
     cxmin, cxmax, cymin, cymax = args.crop
     assert cxmin >= 0 and cymin >= 0, "LEFT and TOP crop values must be >= 0"
@@ -340,24 +342,28 @@ if args.crop:
         assert cymax < za.shape[0], f"BOTTOM crop value exceeds {iname} height"
     print(f"    1: {args.image1_path} :: Channel {args.image1_channel}")
     img1 = z1[cymin:cymax+1, cxmin:cxmax+1]
-    print(f"    2: {args.image2_path} :: Channel {args.image2_channel}")
-    img2 = z2[cymin:cymax+1, cxmin:cxmax+1]
+    if not args.display_threshold_only:
+        print(f"    2: {args.image2_path} :: Channel {args.image2_channel}")
+        img2 = z2[cymin:cymax+1, cxmin:cxmax+1]
 else:
     print(f"    1: {args.image1_path} :: Channel {args.image1_channel}")
     img1 = z1[:]
-    print(f"    2: {args.image2_path} :: Channel {args.image2_channel}")
-    img2 = z2[:]
-its = np.minimum(img1.shape, img2.shape)
+    if not args.display_threshold_only:
+        print(f"    2: {args.image2_path} :: Channel {args.image2_channel}")
+        img2 = z2[:]
+its = np.minimum(img1.shape, img2.shape if not args.display_threshold_only else np.iinfo(int).max)
 its_round = its // ga_downscale * ga_downscale
 c1 = crop_to(img1, its_round)
-c2 = crop_to(img2, its_round)
+if not args.display_threshold_only:
+    c2 = crop_to(img2, its_round)
 
 do_global_align = not (args.skip_global_align or args.display_threshold_only)
 if do_global_align:
     print()
     print("Performing global image alignment")
 r1 = downscale(c1, ga_downscale)
-r2 = downscale(c2, ga_downscale)
+if not args.display_threshold_only:
+    r2 = downscale(c2, ga_downscale)
 if do_global_align:
     shift = skimage.registration.phase_cross_correlation(
         r1, r2, upsample_factor=ga_downscale,
@@ -377,7 +383,8 @@ for d in 0, 1:
 
 shape = (its - border) // bsize * bsize
 c1 = crop_to(img1, shape, offset1)
-c2 = crop_to(img2, shape, offset2)
+if not args.display_threshold_only:
+    c2 = crop_to(img2, shape, offset2)
 
 print()
 print("Computing foreground image mask")
