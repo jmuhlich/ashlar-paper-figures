@@ -1,3 +1,17 @@
+# /// script
+# dependencies = [
+#     "imagecodecs",
+#     "matplotlib",
+#     "numpy",
+#     "scikit-image",
+#     "scikit-learn",
+#     "threadpoolctl",
+#     "tifffile",
+#     "tqdm",
+#     "zarr",
+# ]
+# ///
+
 import os
 import sys
 import argparse

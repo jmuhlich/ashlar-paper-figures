@@ -1,9 +1,16 @@
+# /// script
+# dependencies = [
+#     "matplotlib",
+#     "numpy",
+#     "seaborn",
+# ]
+# ///
+
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import pathlib
 import seaborn as sns
-import sys
 
 parser = argparse.ArgumentParser(
     description="Plot kernel density estimates of several 1-D arrays stored in"
